@@ -5,28 +5,45 @@ struct ContentView: View {
     @EnvironmentObject private var appState: AppState
     @StateObject private var zoomState = MediaZoomState()
     @AppStorage("trackpadScrollNavigates") private var trackpadScrollNavigates = false
+    @State private var toolbarVisible = false
+    @State private var hideToolbarWorkItem: DispatchWorkItem?
 
     var body: some View {
         ZStack {
             Color(nsColor: .windowBackgroundColor)
                 .ignoresSafeArea()
 
-            VStack(spacing: 0) {
-                preview
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            preview
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                Divider()
+            VStack {
+                Spacer()
 
-                toolbar
+                if toolbarVisible {
+                    toolbar
+                        .transition(.opacity)
+                }
             }
         }
         .focusable()
         .background(navigationEventViews)
+        .background(
+            MouseMovementReader(
+                onMove: showToolbarBriefly,
+                onExit: hideToolbar
+            )
+        )
+        .background(
+            WindowLifecycleMonitor {
+                stopAllPlayback()
+            }
+        )
         .onDrop(of: [.fileURL], isTargeted: nil, perform: handleDrop)
         .onOpenURL { url in
             appState.open(url)
         }
         .onChange(of: appState.currentItem?.id) { _ in
+            stopAllPlayback()
             zoomState.reset()
         }
     }
@@ -99,6 +116,29 @@ struct ContentView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
+        .background(.ultraThinMaterial)
+    }
+
+    private func showToolbarBriefly() {
+        toolbarVisible = true
+        hideToolbarWorkItem?.cancel()
+
+        let workItem = DispatchWorkItem {
+            toolbarVisible = false
+        }
+
+        hideToolbarWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: workItem)
+    }
+
+    private func hideToolbar() {
+        hideToolbarWorkItem?.cancel()
+        hideToolbarWorkItem = nil
+        toolbarVisible = false
+    }
+
+    private func stopAllPlayback() {
+        NotificationCenter.default.post(name: .stopVideoPlayback, object: nil)
     }
 
     private func toggleVideoPlaybackIfNeeded() {

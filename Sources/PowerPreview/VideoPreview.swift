@@ -64,12 +64,18 @@ struct NativeVideoView: View {
         .onAppear {
             model.load(url)
         }
+        .onDisappear {
+            model.stop()
+        }
         .onChange(of: url) { newURL in
             controlsVisible = false
             model.load(newURL)
         }
         .onReceive(NotificationCenter.default.publisher(for: .toggleVideoPlayback)) { _ in
             model.togglePlayback()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .stopVideoPlayback)) { _ in
+            model.stop()
         }
     }
 
@@ -132,6 +138,17 @@ final class NativeVideoModel: ObservableObject {
             player.play()
             isPlaying = true
         }
+    }
+
+    func stop() {
+        removeTimeObserver()
+        player.pause()
+        player.replaceCurrentItem(with: nil)
+        currentURL = nil
+        isPlaying = false
+        progress = 0
+        currentTimeText = "0:00"
+        durationText = "0:00"
     }
 
     func seek(to newProgress: Double) {
@@ -199,13 +216,11 @@ final class NativeVideoModel: ObservableObject {
 
     deinit {
         let player = self.player
-        let observer = self.timeObserver
-        DispatchQueue.main.async {
-            if let observer {
-                player.removeTimeObserver(observer)
-            }
-            player.pause()
+        if let observer = timeObserver {
+            player.removeTimeObserver(observer)
         }
+        player.pause()
+        player.replaceCurrentItem(with: nil)
     }
 }
 

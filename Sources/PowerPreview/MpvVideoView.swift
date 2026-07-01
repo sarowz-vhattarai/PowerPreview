@@ -41,7 +41,12 @@ final class MpvHostView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        playWhenReady()
+
+        if window == nil {
+            controller.stop()
+        } else {
+            playWhenReady()
+        }
     }
 
     func playWhenReady() {
