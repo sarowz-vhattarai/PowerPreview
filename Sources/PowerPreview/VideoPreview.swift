@@ -3,13 +3,14 @@ import SwiftUI
 
 struct VideoPreview: View {
     let url: URL
+    @ObservedObject var zoomState: MediaZoomState
 
     var body: some View {
         Group {
             if MpvExecutableLocator.executableURL != nil {
                 MpvVideoView(url: url)
             } else {
-                NativeVideoView(url: url)
+                NativeVideoView(url: url, zoomState: zoomState)
             }
         }
         .id(url)
@@ -40,14 +41,17 @@ enum MpvExecutableLocator {
 
 struct NativeVideoView: View {
     let url: URL
+    @ObservedObject var zoomState: MediaZoomState
     @StateObject private var model = NativeVideoModel()
     @State private var controlsVisible = false
     @State private var hideControlsWorkItem: DispatchWorkItem?
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            NativePlayerLayerView(player: model.player)
-                .background(Color.black)
+            ZoomableMediaView(zoomState: zoomState) {
+                NativePlayerLayerView(player: model.player)
+                    .background(Color.black)
+            }
 
             MouseMovementReader(
                 onMove: showControlsBriefly,
@@ -104,11 +108,14 @@ final class NativeVideoModel: ObservableObject {
     @Published var progress = 0.0
     @Published var currentTimeText = "0:00"
     @Published var durationText = "0:00"
+    @Published var canSeek = false
 
     let player = AVPlayer()
     private var currentURL: URL?
     private var timeObserver: Any?
+    private var statusObservation: NSKeyValueObservation?
     private var isSeeking = false
+    private var durationSeconds = 0.0
 
     func load(_ url: URL) {
         guard currentURL != url else {
@@ -117,14 +124,17 @@ final class NativeVideoModel: ObservableObject {
             return
         }
 
-        removeTimeObserver()
+        removeObservers()
         currentURL = url
         progress = 0
         currentTimeText = "0:00"
         durationText = "0:00"
+        canSeek = false
+        durationSeconds = 0
 
         let item = AVPlayerItem(url: url)
         player.replaceCurrentItem(with: item)
+        observeItem(item)
         addTimeObserver()
         player.play()
         isPlaying = true
@@ -141,7 +151,7 @@ final class NativeVideoModel: ObservableObject {
     }
 
     func stop() {
-        removeTimeObserver()
+        removeObservers()
         player.pause()
         player.replaceCurrentItem(with: nil)
         currentURL = nil
@@ -149,20 +159,51 @@ final class NativeVideoModel: ObservableObject {
         progress = 0
         currentTimeText = "0:00"
         durationText = "0:00"
+        canSeek = false
+        durationSeconds = 0
     }
 
     func seek(to newProgress: Double) {
-        guard let duration = finiteDuration, duration > 0 else {
+        guard durationSeconds > 0 else {
             return
         }
 
         isSeeking = true
-        let seconds = duration * min(max(newProgress, 0), 1)
-        player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600)) { [weak self] _ in
+        let clamped = min(max(newProgress, 0), 1)
+        progress = clamped
+        currentTimeText = formatTime(durationSeconds * clamped)
+
+        let seconds = durationSeconds * clamped
+        player.seek(
+            to: CMTime(seconds: seconds, preferredTimescale: 600),
+            toleranceBefore: .zero,
+            toleranceAfter: .zero
+        ) { [weak self] _ in
             Task { @MainActor in
                 self?.isSeeking = false
             }
         }
+    }
+
+    private func observeItem(_ item: AVPlayerItem) {
+        statusObservation = item.observe(\.status, options: [.initial, .new]) { [weak self] observedItem, _ in
+            Task { @MainActor [weak self] in
+                self?.refreshDuration(from: observedItem)
+            }
+        }
+    }
+
+    private func refreshDuration(from item: AVPlayerItem) {
+        let seconds = item.duration.seconds
+        guard item.status == .readyToPlay, seconds.isFinite, seconds > 0 else {
+            canSeek = false
+            durationSeconds = 0
+            return
+        }
+
+        durationSeconds = seconds
+        durationText = formatTime(seconds)
+        canSeek = true
     }
 
     private func addTimeObserver() {
@@ -179,23 +220,22 @@ final class NativeVideoModel: ObservableObject {
             return
         }
 
-        let duration = finiteDuration ?? 0
-        currentTimeText = formatTime(currentTime)
-        durationText = formatTime(duration)
+        if let item = player.currentItem {
+            refreshDuration(from: item)
+        }
 
-        if duration > 0 {
-            progress = min(max(currentTime / duration, 0), 1)
+        currentTimeText = formatTime(currentTime)
+
+        if durationSeconds > 0 {
+            progress = min(max(currentTime / durationSeconds, 0), 1)
         } else {
             progress = 0
         }
     }
 
-    private var finiteDuration: Double? {
-        guard let seconds = player.currentItem?.duration.seconds, seconds.isFinite, seconds > 0 else {
-            return nil
-        }
-
-        return seconds
+    private func removeObservers() {
+        removeTimeObserver()
+        statusObservation = nil
     }
 
     private func formatTime(_ seconds: Double) -> String {
@@ -275,13 +315,20 @@ final class PlayerLayerHostView: NSView {
 
 struct VideoControlOverlay: View {
     @ObservedObject var model: NativeVideoModel
+    @State private var scrubProgress = 0.0
+    @State private var isScrubbing = false
 
     var body: some View {
         HStack(spacing: 12) {
-            Button(model.isPlaying ? "Pause" : "Play") {
+            Button {
                 model.togglePlayback()
+            } label: {
+                Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
+                    .font(.title3)
+                    .frame(width: 24, height: 24)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.plain)
+            .foregroundStyle(.white)
 
             Text(model.currentTimeText)
                 .font(.caption.monospacedDigit())
@@ -289,14 +336,25 @@ struct VideoControlOverlay: View {
 
             Slider(
                 value: Binding(
-                    get: { model.progress },
+                    get: { isScrubbing ? scrubProgress : model.progress },
                     set: { newValue in
-                        model.progress = newValue
-                        model.seek(to: newValue)
+                        scrubProgress = newValue
+                        if isScrubbing {
+                            model.seek(to: newValue)
+                        }
                     }
                 ),
-                in: 0...1
+                in: 0...1,
+                onEditingChanged: { editing in
+                    isScrubbing = editing
+                    if editing {
+                        scrubProgress = model.progress
+                    } else {
+                        model.seek(to: scrubProgress)
+                    }
+                }
             )
+            .disabled(!model.canSeek)
 
             Text(model.durationText)
                 .font(.caption.monospacedDigit())
@@ -329,45 +387,61 @@ final class MouseMovementView: NSView {
     var onMove: (() -> Void)?
     var onExit: (() -> Void)?
 
-    private var trackingArea: NSTrackingArea?
+    private var mouseMonitor: Any?
     private var lastMouseLocation: NSPoint?
+    private var isInside = false
 
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
 
-        if let trackingArea {
-            removeTrackingArea(trackingArea)
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+
+        if window == nil {
+            removeMouseMonitor()
+        } else {
+            installMouseMonitorIfNeeded()
         }
-
-        let trackingArea = NSTrackingArea(
-            rect: bounds,
-            options: [.mouseEnteredAndExited, .mouseMoved, .activeInKeyWindow, .inVisibleRect],
-            owner: self,
-            userInfo: nil
-        )
-        addTrackingArea(trackingArea)
-        self.trackingArea = trackingArea
     }
 
-    override func mouseEntered(with event: NSEvent) {
-        lastMouseLocation = convert(event.locationInWindow, from: nil)
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        lastMouseLocation = nil
-        onExit?()
-    }
-
-    override func mouseMoved(with event: NSEvent) {
-        let location = convert(event.locationInWindow, from: nil)
-        defer {
-            lastMouseLocation = location
-        }
-
-        guard location != lastMouseLocation else {
+    private func installMouseMonitorIfNeeded() {
+        guard mouseMonitor == nil else {
             return
         }
 
-        onMove?()
+        mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved]) { [weak self] event in
+            guard let self, let window = self.window, event.window === window else {
+                return event
+            }
+
+            let location = self.convert(event.locationInWindow, from: nil)
+            let inside = self.bounds.contains(location)
+
+            if inside {
+                if location != self.lastMouseLocation {
+                    self.lastMouseLocation = location
+                    self.onMove?()
+                }
+                self.isInside = true
+            } else if self.isInside {
+                self.isInside = false
+                self.lastMouseLocation = nil
+                self.onExit?()
+            }
+
+            return event
+        }
+    }
+
+    private func removeMouseMonitor() {
+        if let mouseMonitor {
+            NSEvent.removeMonitor(mouseMonitor)
+            self.mouseMonitor = nil
+        }
+    }
+
+    deinit {
+        removeMouseMonitor()
     }
 }

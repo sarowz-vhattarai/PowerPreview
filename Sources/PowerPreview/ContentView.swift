@@ -17,12 +17,12 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             VStack {
-                Spacer()
-
                 if toolbarVisible {
                     toolbar
                         .transition(.opacity)
                 }
+
+                Spacer()
             }
         }
         .focusable()
@@ -67,13 +67,13 @@ struct ContentView: View {
     @ViewBuilder
     private var preview: some View {
         if let item = appState.currentItem {
-            ZoomableMediaView(zoomState: zoomState) {
-                switch item.kind {
-                case .image:
+            switch item.kind {
+            case .image:
+                ZoomableMediaView(zoomState: zoomState) {
                     ImagePreview(url: item.url)
-                case .video:
-                    VideoPreview(url: item.url)
                 }
+            case .video:
+                VideoPreview(url: item.url, zoomState: zoomState)
             }
         } else {
             EmptyStateView(
@@ -117,6 +117,9 @@ struct ContentView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .background(.ultraThinMaterial)
+        .overlay(alignment: .bottom) {
+            Divider()
+        }
     }
 
     private func showToolbarBriefly() {
