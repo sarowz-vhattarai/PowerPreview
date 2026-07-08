@@ -45,6 +45,17 @@ struct ContentView: View {
         .onChange(of: appState.currentItem?.id) { _ in
             stopAllPlayback()
             zoomState.reset()
+            appState.scheduleSlideshowStep()
+        }
+        .onChange(of: appState.isSlideshowEnabled) { enabled in
+            if enabled {
+                appState.scheduleSlideshowStep()
+            } else {
+                appState.cancelSlideshowStep()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .videoDidFinishPlaying)) { _ in
+            appState.onVideoFinished()
         }
     }
 
@@ -93,6 +104,13 @@ struct ContentView: View {
             Toggle("Trackpad Next", isOn: $trackpadScrollNavigates)
                 .toggleStyle(.checkbox)
                 .help("When off, trackpad scrolling pans zoomed media. Mouse wheel navigation still works.")
+
+            Toggle("Slideshow", isOn: Binding(
+                get: { appState.isSlideshowEnabled },
+                set: { appState.setSlideshowEnabled($0) }
+            ))
+            .toggleStyle(.checkbox)
+            .help("Automatically advance photos after 2 seconds and videos when playback finishes.")
 
             Spacer()
 

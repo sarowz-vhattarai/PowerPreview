@@ -114,6 +114,7 @@ final class NativeVideoModel: ObservableObject {
     private var currentURL: URL?
     private var timeObserver: Any?
     private var statusObservation: NSKeyValueObservation?
+    private var endPlaybackObserver: NSObjectProtocol?
     private var isSeeking = false
     private var durationSeconds = 0.0
 
@@ -191,6 +192,18 @@ final class NativeVideoModel: ObservableObject {
                 self?.refreshDuration(from: observedItem)
             }
         }
+
+        if let endPlaybackObserver {
+            NotificationCenter.default.removeObserver(endPlaybackObserver)
+        }
+
+        endPlaybackObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { _ in
+            NotificationCenter.default.post(name: .videoDidFinishPlaying, object: nil)
+        }
     }
 
     private func refreshDuration(from item: AVPlayerItem) {
@@ -236,6 +249,11 @@ final class NativeVideoModel: ObservableObject {
     private func removeObservers() {
         removeTimeObserver()
         statusObservation = nil
+
+        if let endPlaybackObserver {
+            NotificationCenter.default.removeObserver(endPlaybackObserver)
+            self.endPlaybackObserver = nil
+        }
     }
 
     private func formatTime(_ seconds: Double) -> String {

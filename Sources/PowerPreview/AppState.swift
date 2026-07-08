@@ -9,8 +9,10 @@ final class AppState: ObservableObject {
     @Published private(set) var items: [MediaItem] = []
     @Published var currentIndex = 0
     @Published var errorMessage: String?
+    @Published var isSlideshowEnabled = false
 
     private let scanner: MediaScanner
+    private var slideshowTask: Task<Void, Never>?
 
     var currentItem: MediaItem? {
         guard items.indices.contains(currentIndex) else {
@@ -107,5 +109,52 @@ final class AppState: ObservableObject {
         }
 
         currentIndex = max(currentIndex - 1, 0)
+    }
+
+    func setSlideshowEnabled(_ enabled: Bool) {
+        isSlideshowEnabled = enabled
+        if enabled {
+            scheduleSlideshowStep()
+        } else {
+            cancelSlideshowStep()
+        }
+    }
+
+    func scheduleSlideshowStep() {
+        cancelSlideshowStep()
+
+        guard isSlideshowEnabled, let item = currentItem, item.kind == .image else {
+            return
+        }
+
+        slideshowTask = Task {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard !Task.isCancelled, isSlideshowEnabled else {
+                return
+            }
+
+            advanceSlideshow()
+        }
+    }
+
+    func onVideoFinished() {
+        guard isSlideshowEnabled else {
+            return
+        }
+
+        advanceSlideshow()
+    }
+
+    func cancelSlideshowStep() {
+        slideshowTask?.cancel()
+        slideshowTask = nil
+    }
+
+    private func advanceSlideshow() {
+        guard !items.isEmpty else {
+            return
+        }
+
+        currentIndex = currentIndex >= items.count - 1 ? 0 : currentIndex + 1
     }
 }
