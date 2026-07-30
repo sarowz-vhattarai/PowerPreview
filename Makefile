@@ -1,4 +1,4 @@
-.PHONY: build test dmg clean
+.PHONY: build test dmg clean fetch-mpv
 
 build:
 	./Scripts/build-app.sh
@@ -6,7 +6,10 @@ build:
 test:
 	swift test
 
-dmg:
+fetch-mpv:
+	./Scripts/fetch-mpv.sh
+
+dmg: fetch-mpv
 	./Scripts/package-dmg.sh
 
 clean:

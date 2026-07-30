@@ -7,35 +7,14 @@ struct VideoPreview: View {
 
     var body: some View {
         Group {
+            // Prefer mpv for MKV/HDR and broad codec support when available.
             if MpvExecutableLocator.executableURL != nil {
-                MpvVideoView(url: url)
+                MpvVideoView(url: url, zoomState: zoomState)
             } else {
                 NativeVideoView(url: url, zoomState: zoomState)
             }
         }
         .id(url)
-    }
-}
-
-enum MpvExecutableLocator {
-    static var executableURL: URL? {
-        if let override = ProcessInfo.processInfo.environment["POWERPREVIEW_MPV_PATH"],
-           FileManager.default.isExecutableFile(atPath: override) {
-            return URL(fileURLWithPath: override)
-        }
-
-        if let bundled = Bundle.main.url(forResource: "mpv", withExtension: nil),
-           FileManager.default.isExecutableFile(atPath: bundled.path) {
-            return bundled
-        }
-
-        for path in ["/opt/homebrew/bin/mpv", "/usr/local/bin/mpv", "/usr/bin/mpv"] {
-            if FileManager.default.isExecutableFile(atPath: path) {
-                return URL(fileURLWithPath: path)
-            }
-        }
-
-        return nil
     }
 }
 

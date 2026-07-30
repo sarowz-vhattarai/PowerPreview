@@ -8,3 +8,6 @@ DerivedData/
 .swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
 .netrc
 dist/
+# Large binary runtime; fetch with Scripts/fetch-mpv.sh
+Vendor/mpv/mpv
+Vendor/mpv/lib/

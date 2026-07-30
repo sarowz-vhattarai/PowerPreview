@@ -21,27 +21,11 @@ require_macos_sdk() {
   xcrun --sdk macosx --show-sdk-path >/dev/null 2>&1 || die "macOS SDK is not available. Install or repair Apple Command Line Tools with: xcode-select --install"
 }
 
-find_mpv() {
-  local candidates=()
-
-  if [[ -n "${POWERPREVIEW_MPV_PATH:-}" ]]; then
-    candidates+=("$POWERPREVIEW_MPV_PATH")
+find_mpv_runtime() {
+  if [[ -x "$ROOT_DIR/Vendor/mpv/mpv" && -d "$ROOT_DIR/Vendor/mpv/lib" ]]; then
+    echo "$ROOT_DIR/Vendor/mpv"
+    return 0
   fi
-
-  candidates+=(
-    "$ROOT_DIR/Vendor/mpv/mpv"
-    "$ROOT_DIR/Sources/PowerPreview/Resources/mpv"
-    "/opt/homebrew/bin/mpv"
-    "/usr/local/bin/mpv"
-  )
-
-  for candidate in "${candidates[@]}"; do
-    if [[ -x "$candidate" ]]; then
-      echo "$candidate"
-      return 0
-    fi
-  done
-
   return 1
 }
 
@@ -91,6 +75,21 @@ write_info_plist() {
       <string>Viewer</string>
       <key>LSHandlerRank</key>
       <string>Alternate</string>
+      <key>CFBundleTypeExtensions</key>
+      <array>
+        <string>mp4</string>
+        <string>m4v</string>
+        <string>mov</string>
+        <string>mkv</string>
+        <string>webm</string>
+        <string>avi</string>
+        <string>mpeg</string>
+        <string>mpg</string>
+        <string>wmv</string>
+        <string>flv</string>
+        <string>ts</string>
+        <string>m2ts</string>
+      </array>
       <key>LSItemContentTypes</key>
       <array>
         <string>public.movie</string>
@@ -98,6 +97,7 @@ write_info_plist() {
         <string>public.mpeg-4</string>
         <string>com.apple.quicktime-movie</string>
         <string>org.webmproject.webm</string>
+        <string>public.avi</string>
       </array>
     </dict>
   </array>
@@ -118,13 +118,13 @@ write_info_plist() {
 PLIST
 }
 
-MPV_PATH="$(find_mpv || true)"
-if [[ -z "$MPV_PATH" && "${MPV_REQUIRED:-0}" == "1" ]]; then
-  die "mpv was not found. Put a self-contained macOS mpv executable at Vendor/mpv/mpv or set POWERPREVIEW_MPV_PATH=/path/to/mpv."
+MPV_RUNTIME="$(find_mpv_runtime || true)"
+if [[ -z "$MPV_RUNTIME" && "${MPV_REQUIRED:-0}" == "1" ]]; then
+  die "mpv runtime was not found. Run Scripts/fetch-mpv.sh or place Vendor/mpv/mpv and Vendor/mpv/lib."
 fi
 
-if [[ -z "$MPV_PATH" ]]; then
-  echo "warning: mpv was not found. Building a native AVKit-only DMG; video format support will be limited to what macOS can play." >&2
+if [[ -z "$MPV_RUNTIME" ]]; then
+  echo "warning: mpv runtime was not found. Building a native AVKit-only DMG; MKV and many movie formats will not play." >&2
 fi
 
 require_macos_sdk
@@ -140,19 +140,15 @@ chmod +x "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 cp "$BUILD_DIR/libPowerPreviewCore.dylib" "$APP_BUNDLE/Contents/Frameworks/libPowerPreviewCore.dylib"
 cp "$ICON_PATH" "$APP_BUNDLE/Contents/Resources/PowerPreview.icns"
 
-if [[ -n "$MPV_PATH" ]]; then
-  cp "$MPV_PATH" "$APP_BUNDLE/Contents/Resources/mpv"
-  chmod +x "$APP_BUNDLE/Contents/Resources/mpv"
+if [[ -n "$MPV_RUNTIME" ]]; then
+  mkdir -p "$APP_BUNDLE/Contents/Resources/mpv-runtime"
+  cp "$MPV_RUNTIME/mpv" "$APP_BUNDLE/Contents/Resources/mpv-runtime/mpv"
+  chmod +x "$APP_BUNDLE/Contents/Resources/mpv-runtime/mpv"
+  cp -R "$MPV_RUNTIME/lib" "$APP_BUNDLE/Contents/Resources/mpv-runtime/lib"
 fi
 
 write_info_plist
 echo "APPL????" > "$APP_BUNDLE/Contents/PkgInfo"
-
-if [[ -n "$MPV_PATH" ]] && command -v otool >/dev/null 2>&1; then
-  if otool -L "$APP_BUNDLE/Contents/Resources/mpv" | grep -E '/opt/homebrew|/usr/local' >/dev/null 2>&1; then
-    echo "warning: bundled mpv links to Homebrew libraries. Use a self-contained mpv build for a fully independent DMG." >&2
-  fi
-fi
 
 codesign --force --deep --sign "${CODESIGN_IDENTITY:--}" "$APP_BUNDLE"
 

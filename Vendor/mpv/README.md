@@ -1,9 +1,14 @@
-Place a self-contained macOS `mpv` executable here as:
+Place a self-contained macOS mpv runtime here:
 
 ```text
 Vendor/mpv/mpv
+Vendor/mpv/lib/
 ```
 
-The DMG packaging script copies that binary into `PowerPreview.app/Contents/Resources/mpv`.
+Fetch automatically:
 
-For a fully independent app, use an `mpv` build that does not depend on Homebrew libraries. A Homebrew `mpv` binary can work on your machine, but the packaged app may fail on another Mac unless its dependent libraries are bundled too.
+```bash
+./Scripts/fetch-mpv.sh
+```
+
+The packaging script copies this runtime into `PowerPreview.app/Contents/Resources/mpv-runtime/` so MKV, AVI, WebM, HDR, and other ffmpeg-backed formats work without Homebrew.
