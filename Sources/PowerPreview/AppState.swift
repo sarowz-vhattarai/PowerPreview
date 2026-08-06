@@ -5,11 +5,16 @@ import PowerPreviewCore
 
 @MainActor
 final class AppState: ObservableObject {
+    private static let playAllDefaultsKey = "isPlayAllEnabled"
+
     @Published private(set) var folderURL: URL?
     @Published private(set) var items: [MediaItem] = []
     @Published var currentIndex = 0
     @Published var errorMessage: String?
     @Published var isSlideshowEnabled = false
+    /// When false (default), opening a file plays only that file — no folder scan.
+    /// When true, scan the parent folder and allow next/prev across siblings.
+    @Published private(set) var isPlayAllEnabled: Bool
 
     private let scanner: MediaScanner
     private var slideshowTask: Task<Void, Never>?
@@ -32,6 +37,7 @@ final class AppState: ObservableObject {
 
     init(scanner: MediaScanner = MediaScanner()) {
         self.scanner = scanner
+        self.isPlayAllEnabled = UserDefaults.standard.object(forKey: Self.playAllDefaultsKey) as? Bool ?? false
     }
 
     func openFolder() {
@@ -71,7 +77,7 @@ final class AppState: ObservableObject {
     }
 
     func loadFile(_ url: URL) {
-        guard SupportedMedia.kind(for: url) != nil else {
+        guard let kind = SupportedMedia.kind(for: url) else {
             folderURL = nil
             items = []
             currentIndex = 0
@@ -80,18 +86,14 @@ final class AppState: ObservableObject {
         }
 
         let parentFolder = url.deletingLastPathComponent()
+        folderURL = parentFolder
 
-        do {
-            let scannedItems = try scanner.scan(folder: parentFolder)
-            folderURL = parentFolder
-            items = scannedItems
-            currentIndex = scannedItems.firstIndex { $0.url.standardizedFileURL == url.standardizedFileURL } ?? 0
-            errorMessage = scannedItems.isEmpty ? "No supported photos or videos found in this folder." : nil
-        } catch {
-            folderURL = nil
-            items = []
+        if isPlayAllEnabled {
+            loadSiblingPlaylist(around: url, in: parentFolder)
+        } else {
+            items = [MediaItem(url: url, kind: kind)]
             currentIndex = 0
-            errorMessage = "Could not open file: \(error.localizedDescription)"
+            errorMessage = nil
         }
     }
 
@@ -109,6 +111,16 @@ final class AppState: ObservableObject {
         }
 
         currentIndex = max(currentIndex - 1, 0)
+    }
+
+    func setPlayAllEnabled(_ enabled: Bool) {
+        guard isPlayAllEnabled != enabled else {
+            return
+        }
+
+        isPlayAllEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.playAllDefaultsKey)
+        applyPlayAllMode()
     }
 
     func setSlideshowEnabled(_ enabled: Bool) {
@@ -148,6 +160,41 @@ final class AppState: ObservableObject {
     func cancelSlideshowStep() {
         slideshowTask?.cancel()
         slideshowTask = nil
+    }
+
+    private func applyPlayAllMode() {
+        guard let current = currentItem else {
+            return
+        }
+
+        if isPlayAllEnabled {
+            let parent = folderURL ?? current.url.deletingLastPathComponent()
+            folderURL = parent
+            loadSiblingPlaylist(around: current.url, in: parent)
+        } else {
+            items = [current]
+            currentIndex = 0
+            errorMessage = nil
+        }
+    }
+
+    private func loadSiblingPlaylist(around url: URL, in parentFolder: URL) {
+        do {
+            let scannedItems = try scanner.scan(folder: parentFolder)
+            items = scannedItems
+            currentIndex = scannedItems.firstIndex { $0.url.standardizedFileURL == url.standardizedFileURL } ?? 0
+            errorMessage = scannedItems.isEmpty ? "No supported photos or videos found in this folder." : nil
+        } catch {
+            // Fall back to the single opened file so playback still works.
+            if let kind = SupportedMedia.kind(for: url) {
+                items = [MediaItem(url: url, kind: kind)]
+                currentIndex = 0
+            } else {
+                items = []
+                currentIndex = 0
+            }
+            errorMessage = "Could not scan folder: \(error.localizedDescription)"
+        }
     }
 
     private func advanceSlideshow() {

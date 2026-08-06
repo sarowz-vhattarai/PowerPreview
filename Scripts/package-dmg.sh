@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Classic PowerPreview packaging — AVKit-first DMG, preserves other dist artifacts.
 set -euo pipefail
 
 APP_NAME="PowerPreview"
@@ -10,7 +11,8 @@ ICON_PATH="$ROOT_DIR/.build/icon/PowerPreview.icns"
 DIST_DIR="$ROOT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 STAGING_DIR="$DIST_DIR/dmg-staging"
-DMG_PATH="$DIST_DIR/$APP_NAME-$VERSION.dmg"
+# Separate Classic artifact so MKV 0.2.x DMGs are not overwritten.
+DMG_PATH="$DIST_DIR/$APP_NAME-Classic-$VERSION.dmg"
 
 die() {
   echo "error: $*" >&2
@@ -21,7 +23,12 @@ require_macos_sdk() {
   xcrun --sdk macosx --show-sdk-path >/dev/null 2>&1 || die "macOS SDK is not available. Install or repair Apple Command Line Tools with: xcode-select --install"
 }
 
+# Classic build prefers native AVKit. Only bundle mpv when explicitly requested.
 find_mpv() {
+  if [[ "${BUNDLE_MPV:-0}" != "1" ]]; then
+    return 1
+  fi
+
   local candidates=()
 
   if [[ -n "${POWERPREVIEW_MPV_PATH:-}" ]]; then
@@ -29,7 +36,6 @@ find_mpv() {
   fi
 
   candidates+=(
-    "$ROOT_DIR/Vendor/mpv/mpv"
     "$ROOT_DIR/Sources/PowerPreview/Resources/mpv"
     "/opt/homebrew/bin/mpv"
     "/usr/local/bin/mpv"
@@ -119,17 +125,14 @@ PLIST
 }
 
 MPV_PATH="$(find_mpv || true)"
-if [[ -z "$MPV_PATH" && "${MPV_REQUIRED:-0}" == "1" ]]; then
-  die "mpv was not found. Put a self-contained macOS mpv executable at Vendor/mpv/mpv or set POWERPREVIEW_MPV_PATH=/path/to/mpv."
-fi
-
 if [[ -z "$MPV_PATH" ]]; then
-  echo "warning: mpv was not found. Building a native AVKit-only DMG; video format support will be limited to what macOS can play." >&2
+  echo "Classic build: native AVKit-only (no bundled mpv). Set BUNDLE_MPV=1 to include mpv." >&2
 fi
 
 require_macos_sdk
 
-rm -rf "$DIST_DIR"
+# Preserve other dist artifacts (e.g. PowerPreview-0.2.2.dmg).
+rm -rf "$APP_BUNDLE" "$STAGING_DIR"
 mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources" "$APP_BUNDLE/Contents/Frameworks" "$STAGING_DIR"
 
 "$ROOT_DIR/Scripts/build-app.sh"
@@ -160,7 +163,7 @@ cp -R "$APP_BUNDLE" "$STAGING_DIR/"
 ln -s /Applications "$STAGING_DIR/Applications"
 
 hdiutil create \
-  -volname "$APP_NAME" \
+  -volname "$APP_NAME Classic" \
   -srcfolder "$STAGING_DIR" \
   -ov \
   -format UDZO \

@@ -7,13 +7,28 @@ struct VideoPreview: View {
 
     var body: some View {
         Group {
-            if MpvExecutableLocator.executableURL != nil {
+            // Classic: prefer native AVPlayer for reliable controls/zoom.
+            // Use process-mpv only when forced (POWERPREVIEW_MPV_PATH) for formats
+            // AVFoundation cannot play — big MKV remains limited in this build.
+            if shouldUseProcessMpv {
                 MpvVideoView(url: url)
             } else {
                 NativeVideoView(url: url, zoomState: zoomState)
             }
         }
         .id(url)
+    }
+
+    private var shouldUseProcessMpv: Bool {
+        if ProcessInfo.processInfo.environment["POWERPREVIEW_FORCE_NATIVE"] == "1" {
+            return false
+        }
+        // Only prefer process mpv when explicitly pointed at an executable.
+        if let override = ProcessInfo.processInfo.environment["POWERPREVIEW_MPV_PATH"],
+           FileManager.default.isExecutableFile(atPath: override) {
+            return true
+        }
+        return false
     }
 }
 
@@ -222,7 +237,7 @@ final class NativeVideoModel: ObservableObject {
     private func addTimeObserver() {
         let interval = CMTime(seconds: 0.2, preferredTimescale: 600)
         timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 self?.updateProgress(currentTime: time.seconds)
             }
         }

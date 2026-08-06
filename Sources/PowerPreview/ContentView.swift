@@ -42,6 +42,9 @@ struct ContentView: View {
         .onOpenURL { url in
             appState.open(url)
         }
+        .onAppear {
+            NSApp.windows.first?.title = "PowerPreview Classic 0.1.0"
+        }
         .onChange(of: appState.currentItem?.id) { _ in
             stopAllPlayback()
             zoomState.reset()
@@ -111,6 +114,13 @@ struct ContentView: View {
             ))
             .toggleStyle(.checkbox)
             .help("Automatically advance photos after 2 seconds and videos when playback finishes.")
+
+            Toggle("Play All", isOn: Binding(
+                get: { appState.isPlayAllEnabled },
+                set: { appState.setPlayAllEnabled($0) }
+            ))
+            .toggleStyle(.checkbox)
+            .help("When on, browse other photos/videos in this folder. When off, only the opened file.")
 
             Spacer()
 
