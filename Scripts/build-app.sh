@@ -2,39 +2,16 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BUILD_DIR="$ROOT_DIR/.build/manual"
-APP_NAME="PowerPreview"
+export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 
-SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
-TRIPLE="$(swift -print-target-info | python3 -c 'import json,sys; print(json.load(sys.stdin)["target"]["triple"])')"
+if [[ ! -d "$DEVELOPER_DIR" ]]; then
+  echo "error: Xcode not found at $DEVELOPER_DIR" >&2
+  exit 1
+fi
 
-rm -rf "$BUILD_DIR"
-mkdir -p "$BUILD_DIR"
+cd "$ROOT_DIR"
+swift package resolve
+swift build -c release --product PowerPreview
 
-swiftc \
-  -sdk "$SDKROOT" \
-  -target "$TRIPLE" \
-  -emit-module \
-  -emit-library \
-  -module-name PowerPreviewCore \
-  -parse-as-library \
-  "$ROOT_DIR"/Sources/PowerPreviewCore/*.swift \
-  -emit-module-path "$BUILD_DIR/PowerPreviewCore.swiftmodule" \
-  -o "$BUILD_DIR/libPowerPreviewCore.dylib"
-
-swiftc \
-  -sdk "$SDKROOT" \
-  -target "$TRIPLE" \
-  -I "$BUILD_DIR" \
-  -L "$BUILD_DIR" \
-  -lPowerPreviewCore \
-  -Xlinker -rpath \
-  -Xlinker @executable_path/../Frameworks \
-  -framework AppKit \
-  -framework SwiftUI \
-  -framework AVKit \
-  -framework UniformTypeIdentifiers \
-  "$ROOT_DIR"/Sources/PowerPreview/*.swift \
-  -o "$BUILD_DIR/$APP_NAME"
-
-echo "$BUILD_DIR/$APP_NAME"
+BIN_PATH="$(swift build -c release --show-bin-path)/PowerPreview"
+echo "$BIN_PATH"

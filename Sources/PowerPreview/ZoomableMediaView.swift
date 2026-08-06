@@ -36,6 +36,8 @@ final class MediaZoomState: ObservableObject {
     }
 }
 
+/// Used for photos. Restores trackpad pinch/pan via a transparent AppKit gesture
+/// view (safe here because there is no Metal layer underneath).
 struct ZoomableMediaView<Content: View>: View {
     @ObservedObject var zoomState: MediaZoomState
     @ViewBuilder let content: Content
@@ -44,22 +46,24 @@ struct ZoomableMediaView<Content: View>: View {
         GeometryReader { proxy in
             ZStack {
                 content
+                    .frame(width: proxy.size.width, height: proxy.size.height)
                     .scaleEffect(zoomState.scale, anchor: zoomState.anchor)
                     .offset(zoomState.offset)
 
                 ZoomGestureReader(
                     onMagnify: { delta, location in
-                    let anchor = UnitPoint(
-                        x: max(0, min(1, location.x / max(proxy.size.width, 1))),
-                        y: max(0, min(1, location.y / max(proxy.size.height, 1)))
-                    )
-                    zoomState.magnify(by: delta, at: anchor)
+                        let anchor = UnitPoint(
+                            x: max(0, min(1, location.x / max(proxy.size.width, 1))),
+                            y: max(0, min(1, location.y / max(proxy.size.height, 1)))
+                        )
+                        zoomState.magnify(by: delta, at: anchor)
                     },
                     onPan: { delta in
                         zoomState.pan(by: delta, in: proxy.size)
                     }
                 )
             }
+            .frame(width: proxy.size.width, height: proxy.size.height)
             .clipped()
         }
     }
@@ -88,6 +92,15 @@ final class ZoomGestureView: NSView {
 
     override var acceptsFirstResponder: Bool {
         true
+    }
+
+    override var isOpaque: Bool {
+        false
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        // Participate in magnify/scroll but stay visually transparent.
+        self
     }
 
     override func magnify(with event: NSEvent) {

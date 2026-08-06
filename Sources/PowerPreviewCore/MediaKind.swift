@@ -28,8 +28,10 @@ public enum SupportedMedia {
     ]
 
     public static let videoExtensions: Set<String> = [
-        "mp4", "m4v", "mov", "mkv", "webm", "avi", "mpeg", "mpg",
-        "wmv", "flv", "3gp", "3g2", "ts", "mts", "m2ts", "ogv"
+        "mp4", "m4v", "mov", "mkv", "webm", "avi", "mpeg", "mpg", "m2v",
+        "wmv", "asf", "flv", "f4v", "3gp", "3g2", "ts", "mts", "m2ts",
+        "vob", "ogv", "ogm", "rm", "rmvb", "divx", "xvid", "mpv", "mpe",
+        "mxf", "mts", "dv", "nsv"
     ]
 
     public static func kind(for url: URL) -> MediaKind? {

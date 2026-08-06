@@ -1,4 +1,6 @@
-.PHONY: build test dmg clean fetch-mpv
+.PHONY: build test dmg clean
+
+export DEVELOPER_DIR ?= /Applications/Xcode.app/Contents/Developer
 
 build:
 	./Scripts/build-app.sh
@@ -6,10 +8,7 @@ build:
 test:
 	swift test
 
-fetch-mpv:
-	./Scripts/fetch-mpv.sh
-
-dmg: fetch-mpv
+dmg:
 	./Scripts/package-dmg.sh
 
 clean:

@@ -1,77 +1,115 @@
-import AVKit
 import SwiftUI
 
 struct VideoPreview: View {
     let url: URL
     @ObservedObject var zoomState: MediaZoomState
-
-    var body: some View {
-        Group {
-            // Prefer mpv for MKV/HDR and broad codec support when available.
-            if MpvExecutableLocator.executableURL != nil {
-                MpvVideoView(url: url, zoomState: zoomState)
-            } else {
-                NativeVideoView(url: url, zoomState: zoomState)
-            }
-        }
-        .id(url)
-    }
-}
-
-struct NativeVideoView: View {
-    let url: URL
-    @ObservedObject var zoomState: MediaZoomState
-    @StateObject private var model = NativeVideoModel()
+    /// Shared across next/prev so we reuse one libmpv / Metal surface.
+    @ObservedObject var model: EmbeddedMpvModel
     @State private var controlsVisible = false
     @State private var hideControlsWorkItem: DispatchWorkItem?
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            ZoomableMediaView(zoomState: zoomState) {
-                NativePlayerLayerView(player: model.player)
-                    .background(Color.black)
-            }
+        GeometryReader { proxy in
+            ZStack(alignment: .bottom) {
+                // Metal is attached under the SwiftUI hosting view; this clear
+                // region keeps layout + gestures while chrome stays clickable.
+                Color.clear
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+                    .background(MPVMetalPlayerView(model: model))
+                    .contentShape(Rectangle())
+                    .gesture(
+                        MagnificationGesture()
+                            .onChanged { value in
+                                let delta = (value - 1) * 0.05
+                                zoomState.magnify(by: delta, at: .center)
+                                model.applyZoom(zoomState)
+                            }
+                    )
+                    .simultaneousGesture(
+                        DragGesture()
+                            .onChanged { value in
+                                zoomState.pan(
+                                    by: CGSize(
+                                        width: value.translation.width * 0.05,
+                                        height: value.translation.height * 0.05
+                                    ),
+                                    in: proxy.size
+                                )
+                                model.applyZoom(zoomState)
+                            }
+                    )
 
+                VStack {
+                    HStack {
+                        Spacer()
+                        VideoFormatBadges(model: model, compact: true)
+                            .padding(.top, 56)
+                            .padding(.trailing, 16)
+                    }
+                    Spacer()
+                }
+                .allowsHitTesting(false)
+
+                if model.isBuffering {
+                    ProgressView()
+                        .controlSize(.large)
+                        .allowsHitTesting(false)
+                }
+            }
+        }
+        .background(
             MouseMovementReader(
-                onMove: showControlsBriefly,
-                onExit: hideControls
+                onMove: showControls,
+                onExit: {}
             )
-
-            if controlsVisible {
-                VideoControlOverlay(model: model)
-                    .padding(.horizontal, 18)
-                    .padding(.bottom, 16)
-                    .transition(.opacity)
-            }
-        }
+        )
         .onAppear {
-            model.load(url)
-        }
-        .onDisappear {
-            model.stop()
+            model.play(url: url)
+            model.applyZoom(zoomState)
+            showControls()
+            FloatingChrome.layout()
         }
         .onChange(of: url) { newURL in
-            controlsVisible = false
-            model.load(newURL)
+            // Replace file on the same mpv instance — do not recreate Metal/mpv.
+            model.play(url: newURL)
+            model.applyZoom(zoomState)
+            showControls()
+            FloatingChrome.layout()
+        }
+        .onChange(of: zoomState.scale) { _ in
+            model.applyZoom(zoomState)
+        }
+        .onChange(of: zoomState.offset.width) { _ in
+            model.applyZoom(zoomState)
+        }
+        .onChange(of: zoomState.offset.height) { _ in
+            model.applyZoom(zoomState)
+        }
+        .onDisappear {
+            // Leaving video entirely (e.g. to a photo) — soft-stop, tear down on VC deinit.
+            model.stop(keepingPlayer: false)
         }
         .onReceive(NotificationCenter.default.publisher(for: .toggleVideoPlayback)) { _ in
             model.togglePlayback()
         }
         .onReceive(NotificationCenter.default.publisher(for: .stopVideoPlayback)) { _ in
-            model.stop()
+            model.stop(keepingPlayer: false)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .powerPreviewShowVideoControls)) { _ in
+            showControls()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .powerPreviewHideVideoControls)) { _ in
+            hideControls()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .powerPreviewWindowGeometryChanged)) { _ in
+            FloatingChrome.layout()
         }
     }
 
-    private func showControlsBriefly() {
+    private func showControls() {
         controlsVisible = true
         hideControlsWorkItem?.cancel()
-
-        let workItem = DispatchWorkItem {
-            controlsVisible = false
-        }
-
-        hideControlsWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: workItem)
+        hideControlsWorkItem = nil
     }
 
     private func hideControls() {
@@ -81,237 +119,8 @@ struct NativeVideoView: View {
     }
 }
 
-@MainActor
-final class NativeVideoModel: ObservableObject {
-    @Published var isPlaying = false
-    @Published var progress = 0.0
-    @Published var currentTimeText = "0:00"
-    @Published var durationText = "0:00"
-    @Published var canSeek = false
-
-    let player = AVPlayer()
-    private var currentURL: URL?
-    private var timeObserver: Any?
-    private var statusObservation: NSKeyValueObservation?
-    private var endPlaybackObserver: NSObjectProtocol?
-    private var isSeeking = false
-    private var durationSeconds = 0.0
-
-    func load(_ url: URL) {
-        guard currentURL != url else {
-            player.play()
-            isPlaying = true
-            return
-        }
-
-        removeObservers()
-        currentURL = url
-        progress = 0
-        currentTimeText = "0:00"
-        durationText = "0:00"
-        canSeek = false
-        durationSeconds = 0
-
-        let item = AVPlayerItem(url: url)
-        player.replaceCurrentItem(with: item)
-        observeItem(item)
-        addTimeObserver()
-        player.play()
-        isPlaying = true
-    }
-
-    func togglePlayback() {
-        if isPlaying {
-            player.pause()
-            isPlaying = false
-        } else {
-            player.play()
-            isPlaying = true
-        }
-    }
-
-    func stop() {
-        removeObservers()
-        player.pause()
-        player.replaceCurrentItem(with: nil)
-        currentURL = nil
-        isPlaying = false
-        progress = 0
-        currentTimeText = "0:00"
-        durationText = "0:00"
-        canSeek = false
-        durationSeconds = 0
-    }
-
-    func seek(to newProgress: Double) {
-        guard durationSeconds > 0 else {
-            return
-        }
-
-        isSeeking = true
-        let clamped = min(max(newProgress, 0), 1)
-        progress = clamped
-        currentTimeText = formatTime(durationSeconds * clamped)
-
-        let seconds = durationSeconds * clamped
-        player.seek(
-            to: CMTime(seconds: seconds, preferredTimescale: 600),
-            toleranceBefore: .zero,
-            toleranceAfter: .zero
-        ) { [weak self] _ in
-            Task { @MainActor in
-                self?.isSeeking = false
-            }
-        }
-    }
-
-    private func observeItem(_ item: AVPlayerItem) {
-        statusObservation = item.observe(\.status, options: [.initial, .new]) { [weak self] observedItem, _ in
-            Task { @MainActor [weak self] in
-                self?.refreshDuration(from: observedItem)
-            }
-        }
-
-        if let endPlaybackObserver {
-            NotificationCenter.default.removeObserver(endPlaybackObserver)
-        }
-
-        endPlaybackObserver = NotificationCenter.default.addObserver(
-            forName: .AVPlayerItemDidPlayToEndTime,
-            object: item,
-            queue: .main
-        ) { _ in
-            NotificationCenter.default.post(name: .videoDidFinishPlaying, object: nil)
-        }
-    }
-
-    private func refreshDuration(from item: AVPlayerItem) {
-        let seconds = item.duration.seconds
-        guard item.status == .readyToPlay, seconds.isFinite, seconds > 0 else {
-            canSeek = false
-            durationSeconds = 0
-            return
-        }
-
-        durationSeconds = seconds
-        durationText = formatTime(seconds)
-        canSeek = true
-    }
-
-    private func addTimeObserver() {
-        let interval = CMTime(seconds: 0.2, preferredTimescale: 600)
-        timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
-            Task { @MainActor in
-                self?.updateProgress(currentTime: time.seconds)
-            }
-        }
-    }
-
-    private func updateProgress(currentTime: Double) {
-        guard !isSeeking, currentTime.isFinite else {
-            return
-        }
-
-        if let item = player.currentItem {
-            refreshDuration(from: item)
-        }
-
-        currentTimeText = formatTime(currentTime)
-
-        if durationSeconds > 0 {
-            progress = min(max(currentTime / durationSeconds, 0), 1)
-        } else {
-            progress = 0
-        }
-    }
-
-    private func removeObservers() {
-        removeTimeObserver()
-        statusObservation = nil
-
-        if let endPlaybackObserver {
-            NotificationCenter.default.removeObserver(endPlaybackObserver)
-            self.endPlaybackObserver = nil
-        }
-    }
-
-    private func formatTime(_ seconds: Double) -> String {
-        guard seconds.isFinite, seconds > 0 else {
-            return "0:00"
-        }
-
-        let totalSeconds = Int(seconds.rounded())
-        return "\(totalSeconds / 60):\(String(format: "%02d", totalSeconds % 60))"
-    }
-
-    private func removeTimeObserver() {
-        if let timeObserver {
-            player.removeTimeObserver(timeObserver)
-            self.timeObserver = nil
-        }
-    }
-
-    deinit {
-        let player = self.player
-        if let observer = timeObserver {
-            player.removeTimeObserver(observer)
-        }
-        player.pause()
-        player.replaceCurrentItem(with: nil)
-    }
-}
-
-struct NativePlayerLayerView: NSViewRepresentable {
-    let player: AVPlayer
-
-    func makeNSView(context: Context) -> PlayerLayerHostView {
-        let view = PlayerLayerHostView()
-        view.player = player
-        return view
-    }
-
-    func updateNSView(_ nsView: PlayerLayerHostView, context: Context) {
-        nsView.player = player
-    }
-}
-
-final class PlayerLayerHostView: NSView {
-    private let playerLayer = AVPlayerLayer()
-
-    var player: AVPlayer? {
-        get {
-            playerLayer.player
-        }
-        set {
-            playerLayer.player = newValue
-        }
-    }
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        configure()
-    }
-
-    required init?(coder: NSCoder) {
-        super.init(coder: coder)
-        configure()
-    }
-
-    override func layout() {
-        super.layout()
-        playerLayer.frame = bounds
-    }
-
-    private func configure() {
-        wantsLayer = true
-        layer?.backgroundColor = NSColor.black.cgColor
-        playerLayer.videoGravity = .resizeAspect
-        layer?.addSublayer(playerLayer)
-    }
-}
-
-struct VideoControlOverlay: View {
-    @ObservedObject var model: NativeVideoModel
+struct EmbeddedMpvControlOverlay: View {
+    @ObservedObject var model: EmbeddedMpvModel
     @State private var scrubProgress = 0.0
     @State private var isScrubbing = false
 
@@ -356,89 +165,52 @@ struct VideoControlOverlay: View {
             Text(model.durationText)
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.white)
+
+            VideoFormatBadges(model: model, compact: false)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 10))
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.black.opacity(0.78))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
+        )
     }
 }
 
-struct MouseMovementReader: NSViewRepresentable {
-    let onMove: () -> Void
-    let onExit: () -> Void
+struct VideoFormatBadges: View {
+    @ObservedObject var model: EmbeddedMpvModel
+    var compact: Bool
 
-    func makeNSView(context: Context) -> MouseMovementView {
-        let view = MouseMovementView()
-        view.onMove = onMove
-        view.onExit = onExit
-        return view
-    }
-
-    func updateNSView(_ nsView: MouseMovementView, context: Context) {
-        nsView.onMove = onMove
-        nsView.onExit = onExit
-    }
-}
-
-final class MouseMovementView: NSView {
-    var onMove: (() -> Void)?
-    var onExit: (() -> Void)?
-
-    private var mouseMonitor: Any?
-    private var lastMouseLocation: NSPoint?
-    private var isInside = false
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        nil
-    }
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-
-        if window == nil {
-            removeMouseMonitor()
-        } else {
-            installMouseMonitorIfNeeded()
-        }
-    }
-
-    private func installMouseMonitorIfNeeded() {
-        guard mouseMonitor == nil else {
-            return
-        }
-
-        mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved]) { [weak self] event in
-            guard let self, let window = self.window, event.window === window else {
-                return event
+    var body: some View {
+        HStack(spacing: 6) {
+            if model.is4K {
+                MediaFormatBadge(
+                    title: "4K",
+                    tint: Color(white: 0.22),
+                    compact: compact
+                )
+                .help("UHD / 4K resolution")
             }
 
-            let location = self.convert(event.locationInWindow, from: nil)
-            let inside = self.bounds.contains(location)
-
-            if inside {
-                if location != self.lastMouseLocation {
-                    self.lastMouseLocation = location
-                    self.onMove?()
-                }
-                self.isInside = true
-            } else if self.isInside {
-                self.isInside = false
-                self.lastMouseLocation = nil
-                self.onExit?()
+            if let title = model.signalFormat.badgeTitle {
+                MediaFormatBadge(
+                    title: title,
+                    tint: model.signalFormat.tint,
+                    compact: compact
+                )
+                .help(badgeHelp)
             }
-
-            return event
         }
     }
 
-    private func removeMouseMonitor() {
-        if let mouseMonitor {
-            NSEvent.removeMonitor(mouseMonitor)
-            self.mouseMonitor = nil
+    private var badgeHelp: String {
+        if model.hdrDisplayActive {
+            return "\(model.signalFormat.helpText). Display EDR/HDR path active."
         }
-    }
-
-    deinit {
-        removeMouseMonitor()
+        return model.signalFormat.helpText
     }
 }

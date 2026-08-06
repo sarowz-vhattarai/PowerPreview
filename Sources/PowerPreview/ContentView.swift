@@ -4,26 +4,28 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @EnvironmentObject private var appState: AppState
     @StateObject private var zoomState = MediaZoomState()
+    /// One shared player for all videos — next/prev only loadfile, never a second mpv.
+    @StateObject private var videoModel = EmbeddedMpvModel()
     @AppStorage("trackpadScrollNavigates") private var trackpadScrollNavigates = false
     @State private var toolbarVisible = false
     @State private var hideToolbarWorkItem: DispatchWorkItem?
 
     var body: some View {
+        let showingVideo = appState.currentItem?.kind == .video
+
         ZStack {
-            Color.black
-                .ignoresSafeArea()
+            // For video, leave this clear so the Metal layer under the hosting
+            // view is visible. Photos / empty state still need a black plate.
+            if !showingVideo {
+                Color.black
+                    .ignoresSafeArea()
+            }
 
             preview
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             VStack {
-                if toolbarVisible {
-                    topMenuBar
-                        .padding(.top, 10)
-                        .padding(.horizontal, 14)
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                }
-
+                // Top/bottom chrome is drawn by FloatingChrome above Metal.
                 Spacer()
             }
         }
@@ -31,8 +33,8 @@ struct ContentView: View {
         .background(navigationEventViews)
         .background(
             MouseMovementReader(
-                onMove: showToolbarBriefly,
-                onExit: hideToolbar
+                onMove: showChrome,
+                onExit: hideChrome
             )
         )
         .background(
@@ -45,18 +47,21 @@ struct ContentView: View {
         )
         .background(
             WindowMouseActivityReader(
-                onMove: showToolbarBriefly,
-                onExit: hideToolbar
+                onMove: showChrome,
+                onExit: hideChrome
             )
         )
-        .onDrop(of: [.fileURL], isTargeted: nil, perform: handleDrop)
-        .onOpenURL { url in
-            appState.open(url)
+        .onAppear {
+            NSApp.windows.first?.backgroundColor = .black
+            NSApp.windows.first?.title = "PowerPreview \(AppVersion.marketing)"
+            showChrome()
         }
+        .onDrop(of: [.fileURL], isTargeted: nil, perform: handleDrop)
         .onChange(of: appState.currentItem?.id) { _ in
-            stopAllPlayback()
             zoomState.reset()
             appState.scheduleSlideshowStep()
+            NSApp.windows.first?.backgroundColor = .black
+            showChrome()
         }
         .onChange(of: appState.isSlideshowEnabled) { enabled in
             if enabled {
@@ -67,6 +72,21 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .videoDidFinishPlaying)) { _ in
             appState.onVideoFinished()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .powerPreviewGoPrevious)) { _ in
+            appState.showPrevious()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .powerPreviewGoNext)) { _ in
+            appState.showNext()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .powerPreviewTogglePlayback)) { _ in
+            toggleVideoPlaybackIfNeeded()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .powerPreviewPointerActivity)) { _ in
+            showChrome()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .powerPreviewPointerExit)) { _ in
+            hideChrome()
         }
     }
 
@@ -95,7 +115,7 @@ struct ContentView: View {
                     ImagePreview(url: item.url)
                 }
             case .video:
-                VideoPreview(url: item.url, zoomState: zoomState)
+                VideoPreview(url: item.url, zoomState: zoomState, model: videoModel)
             }
         } else {
             EmptyStateView(
@@ -137,7 +157,7 @@ struct ContentView: View {
 
             Text(appState.statusText)
                 .font(.system(size: 12, weight: .medium, design: .rounded))
-                .foregroundStyle(.primary.opacity(0.9))
+                .foregroundStyle(.white.opacity(0.95))
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .frame(minWidth: 160, maxWidth: 360)
@@ -158,19 +178,25 @@ struct ContentView: View {
         .padding(.vertical, 9)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.black.opacity(0.72))
+        )
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(.ultraThinMaterial)
                 .shadow(color: .black.opacity(0.25), radius: 12, y: 4)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
+                .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
         )
+        .foregroundStyle(.white)
     }
 
     private func menuIconButton(_ systemName: String, help: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.95))
                 .frame(width: 28, height: 28)
                 .contentShape(Rectangle())
         }
@@ -182,11 +208,11 @@ struct ContentView: View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(isOn ? Color.accentColor : Color.primary.opacity(0.85))
+                .foregroundStyle(isOn ? Color.accentColor : Color.white.opacity(0.9))
                 .frame(width: 28, height: 28)
                 .background(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(isOn ? Color.accentColor.opacity(0.18) : Color.clear)
+                        .fill(isOn ? Color.accentColor.opacity(0.22) : Color.white.opacity(0.08))
                 )
                 .contentShape(Rectangle())
         }
@@ -194,22 +220,33 @@ struct ContentView: View {
         .help(help)
     }
 
-    private func showToolbarBriefly() {
+    private func showChrome() {
         toolbarVisible = true
         hideToolbarWorkItem?.cancel()
+        hideToolbarWorkItem = nil
+        FloatingChrome.installIfNeeded(appState: appState)
+        FloatingChrome.setVisible(true)
+        FloatingChrome.layout()
+        NotificationCenter.default.post(name: .powerPreviewShowVideoControls, object: nil)
+    }
 
+    private func hideChrome() {
+        hideToolbarWorkItem?.cancel()
         let workItem = DispatchWorkItem {
             toolbarVisible = false
+            FloatingChrome.setVisible(false)
+            NotificationCenter.default.post(name: .powerPreviewHideVideoControls, object: nil)
         }
-
         hideToolbarWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: workItem)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: workItem)
+    }
+
+    private func showToolbarBriefly() {
+        showChrome()
     }
 
     private func hideToolbar() {
-        hideToolbarWorkItem?.cancel()
-        hideToolbarWorkItem = nil
-        toolbarVisible = false
+        hideChrome()
     }
 
     private func stopAllPlayback() {
@@ -352,13 +389,14 @@ final class WindowMouseActivityView: NSView {
         let inside = window.frame.contains(point)
 
         if inside {
-            if point != lastPoint {
+            if !wasInside || point != lastPoint {
                 lastPoint = point
                 onMove?()
             }
             wasInside = true
         } else if wasInside {
             wasInside = false
+            lastPoint = .zero
             onExit?()
         }
     }

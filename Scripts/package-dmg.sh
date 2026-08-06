@@ -3,30 +3,23 @@ set -euo pipefail
 
 APP_NAME="PowerPreview"
 BUNDLE_ID="com.powerpreview.app"
-VERSION="${VERSION:-0.1.0}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BUILD_DIR="$ROOT_DIR/.build/manual"
-ICON_PATH="$ROOT_DIR/.build/icon/PowerPreview.icns"
+VERSION="${VERSION:-$(tr -d '[:space:]' < "$ROOT_DIR/VERSION" 2>/dev/null || echo 0.2.2)}"
+export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 DIST_DIR="$ROOT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 STAGING_DIR="$DIST_DIR/dmg-staging"
 DMG_PATH="$DIST_DIR/$APP_NAME-$VERSION.dmg"
+ICON_PATH="$ROOT_DIR/.build/icon/PowerPreview.icns"
 
 die() {
   echo "error: $*" >&2
   exit 1
 }
 
-require_macos_sdk() {
-  xcrun --sdk macosx --show-sdk-path >/dev/null 2>&1 || die "macOS SDK is not available. Install or repair Apple Command Line Tools with: xcode-select --install"
-}
-
-find_mpv_runtime() {
-  if [[ -x "$ROOT_DIR/Vendor/mpv/mpv" && -d "$ROOT_DIR/Vendor/mpv/lib" ]]; then
-    echo "$ROOT_DIR/Vendor/mpv"
-    return 0
-  fi
-  return 1
+require_xcode() {
+  [[ -d "$DEVELOPER_DIR" ]] || die "Xcode not found. Install Xcode and/or set DEVELOPER_DIR."
+  xcrun --sdk macosx --show-sdk-platform-path >/dev/null 2>&1 || die "macOS SDK platform missing. Run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer"
 }
 
 write_info_plist() {
@@ -61,10 +54,9 @@ write_info_plist() {
         <string>public.image</string>
         <string>public.jpeg</string>
         <string>public.png</string>
-        <string>com.apple.quicktime-image</string>
+        <string>public.tiff</string>
         <string>com.compuserve.gif</string>
         <string>com.microsoft.bmp</string>
-        <string>public.tiff</string>
         <string>org.webmproject.webp</string>
       </array>
     </dict>
@@ -89,6 +81,14 @@ write_info_plist() {
         <string>flv</string>
         <string>ts</string>
         <string>m2ts</string>
+        <string>mts</string>
+        <string>3gp</string>
+        <string>3g2</string>
+        <string>vob</string>
+        <string>ogv</string>
+        <string>asf</string>
+        <string>m2v</string>
+        <string>mxf</string>
       </array>
       <key>LSItemContentTypes</key>
       <array>
@@ -97,7 +97,6 @@ write_info_plist() {
         <string>public.mpeg-4</string>
         <string>com.apple.quicktime-movie</string>
         <string>org.webmproject.webm</string>
-        <string>public.avi</string>
       </array>
     </dict>
   </array>
@@ -109,6 +108,8 @@ write_info_plist() {
   <string>$VERSION</string>
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
+  <key>LSMultipleInstancesProhibited</key>
+  <true/>
   <key>NSHighResolutionCapable</key>
   <true/>
   <key>NSSupportsAutomaticGraphicsSwitching</key>
@@ -118,35 +119,33 @@ write_info_plist() {
 PLIST
 }
 
-MPV_RUNTIME="$(find_mpv_runtime || true)"
-if [[ -z "$MPV_RUNTIME" && "${MPV_REQUIRED:-0}" == "1" ]]; then
-  die "mpv runtime was not found. Run Scripts/fetch-mpv.sh or place Vendor/mpv/mpv and Vendor/mpv/lib."
-fi
-
-if [[ -z "$MPV_RUNTIME" ]]; then
-  echo "warning: mpv runtime was not found. Building a native AVKit-only DMG; MKV and many movie formats will not play." >&2
-fi
-
-require_macos_sdk
-
+require_xcode
 rm -rf "$DIST_DIR"
 mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources" "$APP_BUNDLE/Contents/Frameworks" "$STAGING_DIR"
 
 "$ROOT_DIR/Scripts/build-app.sh"
 "$ROOT_DIR/Scripts/generate-icon.sh"
 
-cp "$BUILD_DIR/$APP_NAME" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
+BIN_PATH="$(cd "$ROOT_DIR" && swift build -c release --show-bin-path)/PowerPreview"
+cp "$BIN_PATH" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 chmod +x "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
-cp "$BUILD_DIR/libPowerPreviewCore.dylib" "$APP_BUNDLE/Contents/Frameworks/libPowerPreviewCore.dylib"
-cp "$ICON_PATH" "$APP_BUNDLE/Contents/Resources/PowerPreview.icns"
 
-if [[ -n "$MPV_RUNTIME" ]]; then
-  mkdir -p "$APP_BUNDLE/Contents/Resources/mpv-runtime"
-  cp "$MPV_RUNTIME/mpv" "$APP_BUNDLE/Contents/Resources/mpv-runtime/mpv"
-  chmod +x "$APP_BUNDLE/Contents/Resources/mpv-runtime/mpv"
-  cp -R "$MPV_RUNTIME/lib" "$APP_BUNDLE/Contents/Resources/mpv-runtime/lib"
+# MPVKit-GPL links libmpv/FFmpeg into the executable (static). Only copy
+# truly dynamic deps if the linker emitted any next to the binary.
+BIN_DIR="$(dirname "$BIN_PATH")"
+shopt -s nullglob
+for item in "$BIN_DIR"/*.dylib; do
+  cp "$item" "$APP_BUNDLE/Contents/Frameworks/"
+done
+shopt -u nullglob
+
+if compgen -G "$APP_BUNDLE/Contents/Frameworks/*" >/dev/null; then
+  install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP_BUNDLE/Contents/MacOS/$APP_NAME" 2>/dev/null || true
+else
+  rmdir "$APP_BUNDLE/Contents/Frameworks" 2>/dev/null || true
 fi
 
+cp "$ICON_PATH" "$APP_BUNDLE/Contents/Resources/PowerPreview.icns"
 write_info_plist
 echo "APPL????" > "$APP_BUNDLE/Contents/PkgInfo"
 

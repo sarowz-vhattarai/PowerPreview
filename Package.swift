@@ -1,4 +1,4 @@
-// swift-tools-version: 5.8
+// swift-tools-version: 5.9
 
 import PackageDescription
 
@@ -17,6 +17,9 @@ let package = Package(
             targets: ["PowerPreviewCore"]
         )
     ],
+    dependencies: [
+        .package(url: "https://github.com/mpvkit/MPVKit.git", from: "0.41.0")
+    ],
     targets: [
         .target(
             name: "PowerPreviewCore",
@@ -24,10 +27,23 @@ let package = Package(
         ),
         .executableTarget(
             name: "PowerPreview",
-            dependencies: ["PowerPreviewCore"],
+            dependencies: [
+                "PowerPreviewCore",
+                .product(name: "MPVKit-GPL", package: "MPVKit")
+            ],
             path: "Sources/PowerPreview",
+            exclude: [
+                "Resources/README.md"
+            ],
             resources: [
                 .copy("Resources")
+            ],
+            linkerSettings: [
+                .linkedFramework("AppKit"),
+                .linkedFramework("SwiftUI"),
+                .linkedFramework("Metal"),
+                .linkedFramework("QuartzCore"),
+                .linkedFramework("UniformTypeIdentifiers")
             ]
         ),
         .testTarget(
