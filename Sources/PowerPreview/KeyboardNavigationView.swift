@@ -5,12 +5,14 @@ struct KeyboardNavigationView: NSViewRepresentable {
     let onPrevious: () -> Void
     let onNext: () -> Void
     let onSpace: () -> Void
+    let onEscape: () -> Void
 
     func makeNSView(context: Context) -> KeyCatcherView {
         let view = KeyCatcherView()
         view.onPrevious = onPrevious
         view.onNext = onNext
         view.onSpace = onSpace
+        view.onEscape = onEscape
 
         DispatchQueue.main.async {
             view.window?.makeFirstResponder(view)
@@ -23,6 +25,7 @@ struct KeyboardNavigationView: NSViewRepresentable {
         nsView.onPrevious = onPrevious
         nsView.onNext = onNext
         nsView.onSpace = onSpace
+        nsView.onEscape = onEscape
 
         DispatchQueue.main.async {
             nsView.window?.makeFirstResponder(nsView)
@@ -34,6 +37,7 @@ final class KeyCatcherView: NSView {
     var onPrevious: (() -> Void)?
     var onNext: (() -> Void)?
     var onSpace: (() -> Void)?
+    var onEscape: (() -> Void)?
 
     override var acceptsFirstResponder: Bool {
         true
@@ -47,6 +51,8 @@ final class KeyCatcherView: NSView {
             onNext?()
         case 49:
             onSpace?()
+        case 53:
+            onEscape?()
         default:
             super.keyDown(with: event)
         }

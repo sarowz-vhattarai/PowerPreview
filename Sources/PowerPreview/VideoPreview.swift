@@ -1,136 +1,98 @@
-import AVKit
+import AVFoundation
 import SwiftUI
 
 struct VideoPreview: View {
     let url: URL
 
     var body: some View {
-        Group {
-            if MpvExecutableLocator.executableURL != nil {
-                MpvVideoView(url: url)
-            } else {
-                NativeVideoView(url: url)
-            }
-        }
-        .id(url)
-    }
-}
-
-enum MpvExecutableLocator {
-    static var executableURL: URL? {
-        if let override = ProcessInfo.processInfo.environment["POWERPREVIEW_MPV_PATH"],
-           FileManager.default.isExecutableFile(atPath: override) {
-            return URL(fileURLWithPath: override)
-        }
-
-        if let bundled = Bundle.main.url(forResource: "mpv", withExtension: nil),
-           FileManager.default.isExecutableFile(atPath: bundled.path) {
-            return bundled
-        }
-
-        for path in ["/opt/homebrew/bin/mpv", "/usr/local/bin/mpv", "/usr/bin/mpv"] {
-            if FileManager.default.isExecutableFile(atPath: path) {
-                return URL(fileURLWithPath: path)
-            }
-        }
-
-        return nil
+        NativeVideoView(url: url)
+            .id(url)
     }
 }
 
 struct NativeVideoView: View {
     let url: URL
     @StateObject private var model = NativeVideoModel()
-    @State private var controlsVisible = false
-    @State private var hideControlsWorkItem: DispatchWorkItem?
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            NativePlayerLayerView(player: model.player)
-                .background(Color.black)
-
-            MouseMovementReader(
-                onMove: showControlsBriefly,
-                onExit: hideControls
-            )
-
-            if controlsVisible {
-                VideoControlOverlay(model: model)
-                    .padding(.horizontal, 18)
-                    .padding(.bottom, 16)
-                    .transition(.opacity)
+        NativePlayerLayerView(player: model.player)
+            .onAppear {
+                model.load(url)
             }
-        }
-        .onAppear {
-            model.load(url)
-        }
-        .onChange(of: url) { newURL in
-            controlsVisible = false
-            model.load(newURL)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .toggleVideoPlayback)) { _ in
-            model.togglePlayback()
-        }
-    }
-
-    private func showControlsBriefly() {
-        controlsVisible = true
-        hideControlsWorkItem?.cancel()
-
-        let workItem = DispatchWorkItem {
-            controlsVisible = false
-        }
-
-        hideControlsWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: workItem)
-    }
-
-    private func hideControls() {
-        hideControlsWorkItem?.cancel()
-        hideControlsWorkItem = nil
-        controlsVisible = false
+            .onChange(of: url) { newURL in
+                model.load(newURL)
+            }
+            .onDisappear {
+                model.stop()
+            }
     }
 }
 
 @MainActor
 final class NativeVideoModel: ObservableObject {
-    @Published var isPlaying = false
-    @Published var progress = 0.0
-    @Published var currentTimeText = "0:00"
-    @Published var durationText = "0:00"
-
     let player = AVPlayer()
+
     private var currentURL: URL?
     private var timeObserver: Any?
+    private var statusObservation: NSKeyValueObservation?
+    private var endObserver: NSObjectProtocol?
     private var isSeeking = false
 
     func load(_ url: URL) {
+        let session = PlaybackSession.shared
+        session.isVideo = true
+        session.failureMessage = nil
+        session.toggleHandler = { [weak self] in
+            self?.togglePlayback()
+        }
+        session.seekHandler = { [weak self] progress in
+            self?.seek(to: progress)
+        }
+
         guard currentURL != url else {
             player.play()
-            isPlaying = true
+            session.isPlaying = true
             return
         }
 
-        removeTimeObserver()
+        removeObservers()
         currentURL = url
-        progress = 0
-        currentTimeText = "0:00"
-        durationText = "0:00"
+        session.progress = 0
+        session.currentTimeText = "0:00"
+        session.durationText = "0:00"
 
         let item = AVPlayerItem(url: url)
+        statusObservation = item.observe(\.status, options: [.initial, .new]) { item, _ in
+            Task { @MainActor in
+                if item.status == .failed {
+                    PlaybackSession.shared.failureMessage = item.error?.localizedDescription
+                        ?? "This video could not be played."
+                    PlaybackSession.shared.isPlaying = false
+                }
+            }
+        }
+
         player.replaceCurrentItem(with: item)
+        observeEnd(of: item)
         addTimeObserver()
         player.play()
-        isPlaying = true
+        session.isPlaying = true
+    }
+
+    func stop() {
+        player.pause()
+        removeObservers()
+        currentURL = nil
+        PlaybackSession.shared.reset()
     }
 
     func togglePlayback() {
-        if isPlaying {
+        if PlaybackSession.shared.isPlaying {
             player.pause()
-            isPlaying = false
+            PlaybackSession.shared.isPlaying = false
         } else {
             player.play()
-            isPlaying = true
+            PlaybackSession.shared.isPlaying = true
         }
     }
 
@@ -163,14 +125,10 @@ final class NativeVideoModel: ObservableObject {
         }
 
         let duration = finiteDuration ?? 0
-        currentTimeText = formatTime(currentTime)
-        durationText = formatTime(duration)
-
-        if duration > 0 {
-            progress = min(max(currentTime / duration, 0), 1)
-        } else {
-            progress = 0
-        }
+        let session = PlaybackSession.shared
+        session.currentTimeText = formatTime(currentTime)
+        session.durationText = formatTime(duration)
+        session.progress = duration > 0 ? min(max(currentTime / duration, 0), 1) : 0
     }
 
     private var finiteDuration: Double? {
@@ -187,22 +145,52 @@ final class NativeVideoModel: ObservableObject {
         }
 
         let totalSeconds = Int(seconds.rounded())
-        return "\(totalSeconds / 60):\(String(format: "%02d", totalSeconds % 60))"
+        let hours = totalSeconds / 3600
+        let minutes = (totalSeconds % 3600) / 60
+        let remainder = totalSeconds % 60
+
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, remainder)
+        }
+
+        return String(format: "%d:%02d", minutes, remainder)
     }
 
-    private func removeTimeObserver() {
+    private func observeEnd(of item: AVPlayerItem) {
+        endObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { _ in
+            Task { @MainActor in
+                PlaybackSession.shared.isPlaying = false
+                PlaybackSession.shared.noteEnded()
+            }
+        }
+    }
+
+    private func removeObservers() {
         if let timeObserver {
             player.removeTimeObserver(timeObserver)
             self.timeObserver = nil
         }
+        if let endObserver {
+            NotificationCenter.default.removeObserver(endObserver)
+            self.endObserver = nil
+        }
+        statusObservation = nil
     }
 
     deinit {
         let player = self.player
         let observer = self.timeObserver
+        let endObserver = self.endObserver
         DispatchQueue.main.async {
             if let observer {
                 player.removeTimeObserver(observer)
+            }
+            if let endObserver {
+                NotificationCenter.default.removeObserver(endObserver)
             }
             player.pause()
         }
@@ -227,12 +215,8 @@ final class PlayerLayerHostView: NSView {
     private let playerLayer = AVPlayerLayer()
 
     var player: AVPlayer? {
-        get {
-            playerLayer.player
-        }
-        set {
-            playerLayer.player = newValue
-        }
+        get { playerLayer.player }
+        set { playerLayer.player = newValue }
     }
 
     override init(frame frameRect: NSRect) {
@@ -254,105 +238,7 @@ final class PlayerLayerHostView: NSView {
         wantsLayer = true
         layer?.backgroundColor = NSColor.black.cgColor
         playerLayer.videoGravity = .resizeAspect
+        playerLayer.backgroundColor = NSColor.black.cgColor
         layer?.addSublayer(playerLayer)
-    }
-}
-
-struct VideoControlOverlay: View {
-    @ObservedObject var model: NativeVideoModel
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Button(model.isPlaying ? "Pause" : "Play") {
-                model.togglePlayback()
-            }
-            .buttonStyle(.borderedProminent)
-
-            Text(model.currentTimeText)
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.white)
-
-            Slider(
-                value: Binding(
-                    get: { model.progress },
-                    set: { newValue in
-                        model.progress = newValue
-                        model.seek(to: newValue)
-                    }
-                ),
-                in: 0...1
-            )
-
-            Text(model.durationText)
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.white)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 10))
-    }
-}
-
-struct MouseMovementReader: NSViewRepresentable {
-    let onMove: () -> Void
-    let onExit: () -> Void
-
-    func makeNSView(context: Context) -> MouseMovementView {
-        let view = MouseMovementView()
-        view.onMove = onMove
-        view.onExit = onExit
-        return view
-    }
-
-    func updateNSView(_ nsView: MouseMovementView, context: Context) {
-        nsView.onMove = onMove
-        nsView.onExit = onExit
-    }
-}
-
-final class MouseMovementView: NSView {
-    var onMove: (() -> Void)?
-    var onExit: (() -> Void)?
-
-    private var trackingArea: NSTrackingArea?
-    private var lastMouseLocation: NSPoint?
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-
-        if let trackingArea {
-            removeTrackingArea(trackingArea)
-        }
-
-        let trackingArea = NSTrackingArea(
-            rect: bounds,
-            options: [.mouseEnteredAndExited, .mouseMoved, .activeInKeyWindow, .inVisibleRect],
-            owner: self,
-            userInfo: nil
-        )
-        addTrackingArea(trackingArea)
-        self.trackingArea = trackingArea
-    }
-
-    override func mouseEntered(with event: NSEvent) {
-        lastMouseLocation = convert(event.locationInWindow, from: nil)
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        lastMouseLocation = nil
-        onExit?()
-    }
-
-    override func mouseMoved(with event: NSEvent) {
-        let location = convert(event.locationInWindow, from: nil)
-        defer {
-            lastMouseLocation = location
-        }
-
-        guard location != lastMouseLocation else {
-            return
-        }
-
-        onMove?()
     }
 }

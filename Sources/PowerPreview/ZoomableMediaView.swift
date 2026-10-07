@@ -29,6 +29,17 @@ final class MediaZoomState: ObservableObject {
         )
     }
 
+    func toggleZoom(at anchor: UnitPoint) {
+        if scale > 1 {
+            reset()
+            return
+        }
+
+        self.anchor = anchor
+        offset = .zero
+        scale = 2.6
+    }
+
     func reset() {
         scale = 1
         anchor = .center
@@ -38,6 +49,7 @@ final class MediaZoomState: ObservableObject {
 
 struct ZoomableMediaView<Content: View>: View {
     @ObservedObject var zoomState: MediaZoomState
+    let onDoubleClick: (UnitPoint) -> Void
     @ViewBuilder let content: Content
 
     var body: some View {
@@ -48,17 +60,15 @@ struct ZoomableMediaView<Content: View>: View {
                     .offset(zoomState.offset)
 
                 ZoomGestureReader(
-                    onMagnify: { delta, location in
-                    let anchor = UnitPoint(
-                        x: max(0, min(1, location.x / max(proxy.size.width, 1))),
-                        y: max(0, min(1, location.y / max(proxy.size.height, 1)))
-                    )
-                    zoomState.magnify(by: delta, at: anchor)
+                    onMagnify: { delta, anchor in
+                        zoomState.magnify(by: delta, at: anchor)
                     },
+                    onDoubleClick: onDoubleClick,
                     onPan: { delta in
                         zoomState.pan(by: delta, in: proxy.size)
                     }
                 )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .clipped()
         }
@@ -66,32 +76,56 @@ struct ZoomableMediaView<Content: View>: View {
 }
 
 struct ZoomGestureReader: NSViewRepresentable {
-    let onMagnify: (CGFloat, CGPoint) -> Void
+    let onMagnify: (CGFloat, UnitPoint) -> Void
+    let onDoubleClick: (UnitPoint) -> Void
     let onPan: (CGSize) -> Void
 
     func makeNSView(context: Context) -> ZoomGestureView {
         let view = ZoomGestureView()
         view.onMagnify = onMagnify
+        view.onDoubleClick = onDoubleClick
         view.onPan = onPan
         return view
     }
 
     func updateNSView(_ nsView: ZoomGestureView, context: Context) {
         nsView.onMagnify = onMagnify
+        nsView.onDoubleClick = onDoubleClick
         nsView.onPan = onPan
     }
 }
 
 final class ZoomGestureView: NSView {
-    var onMagnify: ((CGFloat, CGPoint) -> Void)?
+    var onMagnify: ((CGFloat, UnitPoint) -> Void)?
+    var onDoubleClick: ((UnitPoint) -> Void)?
     var onPan: ((CGSize) -> Void)?
 
     override var acceptsFirstResponder: Bool {
-        true
+        false
     }
 
     override func magnify(with event: NSEvent) {
-        onMagnify?(event.magnification, convert(event.locationInWindow, from: nil))
+        onMagnify?(event.magnification, unitPoint(for: event))
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if event.clickCount == 2 {
+            onDoubleClick?(unitPoint(for: event))
+            return
+        }
+
+        super.mouseDown(with: event)
+    }
+
+    private func unitPoint(for event: NSEvent) -> UnitPoint {
+        let location = convert(event.locationInWindow, from: nil)
+        let width = max(bounds.width, 1)
+        let height = max(bounds.height, 1)
+        let y = bounds.height - location.y
+        return UnitPoint(
+            x: min(max(location.x / width, 0), 1),
+            y: min(max(y / height, 0), 1)
+        )
     }
 
     override func scrollWheel(with event: NSEvent) {
