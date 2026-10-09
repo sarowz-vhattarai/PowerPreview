@@ -12,6 +12,7 @@ struct ContentView: View {
     @State private var slideshowPaused = false
     @State private var slideshowTask: Task<Void, Never>?
     @State private var topBarHovered = false
+    @State private var bottomBarHovered = false
 
     private let stage = Color(red: 0.07, green: 0.07, blue: 0.08)
     private let slideshowImageDuration: UInt64 = 4_000_000_000
@@ -62,6 +63,32 @@ struct ContentView: View {
                 .animation(.easeOut(duration: 0.16), value: topBarHovered)
             }
         }
+        .overlay(alignment: .bottom) {
+            if isFullscreen && playback.isVideo {
+                ZStack(alignment: .bottom) {
+                    if bottomBarHovered {
+                        scrubber
+                            .padding(.horizontal, 20)
+                            .padding(.vertical, 16)
+                            .frame(maxWidth: .infinity)
+                            .background(
+                                LinearGradient(
+                                    colors: [.clear, .black.opacity(0.72)],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            )
+                            .transition(.opacity)
+                    }
+
+                    TopHoverReveal(isHovering: $bottomBarHovered)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 72)
+                }
+                .frame(maxWidth: .infinity, alignment: .bottom)
+                .animation(.easeOut(duration: 0.16), value: bottomBarHovered)
+            }
+        }
         .background(navigationEventViews)
         .onDrop(of: [.fileURL], isTargeted: $dropTargeted, perform: handleDrop)
         .onOpenURL { url in
@@ -83,11 +110,13 @@ struct ContentView: View {
             guard isMainWindow(note.object) else { return }
             isFullscreen = true
             topBarHovered = false
+            bottomBarHovered = false
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didExitFullScreenNotification)) { note in
             guard isMainWindow(note.object) else { return }
             isFullscreen = false
             topBarHovered = false
+            bottomBarHovered = false
             zoomState.reset()
         }
         .onReceive(NotificationCenter.default.publisher(for: .toggleSlideshow)) { _ in
@@ -231,24 +260,7 @@ struct ContentView: View {
                     }
                     .buttonStyle(ChromeButtonStyle())
 
-                    Text(playback.currentTimeText)
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.white.opacity(0.8))
-                        .frame(width: 58, alignment: .trailing)
-
-                    Slider(
-                        value: Binding(
-                            get: { playback.progress },
-                            set: { playback.seek(to: $0) }
-                        ),
-                        in: 0...1
-                    )
-                    .tint(.white)
-
-                    Text(playback.durationText)
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.white.opacity(0.8))
-                        .frame(width: 64, alignment: .leading)
+                    scrubber
                 }
             }
 
@@ -286,6 +298,29 @@ struct ContentView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
+    }
+
+    private var scrubber: some View {
+        HStack(spacing: 12) {
+            Text(playback.currentTimeText)
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.white.opacity(0.8))
+                .frame(width: 58, alignment: .trailing)
+
+            Slider(
+                value: Binding(
+                    get: { playback.progress },
+                    set: { playback.seek(to: $0) }
+                ),
+                in: 0...1
+            )
+            .tint(.white)
+
+            Text(playback.durationText)
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.white.opacity(0.8))
+                .frame(width: 64, alignment: .leading)
+        }
     }
 
     private func toggleSlideshow() {
