@@ -3,15 +3,6 @@ import SwiftUI
 
 struct VideoPreview: View {
     let url: URL
-
-    var body: some View {
-        NativeVideoView(url: url)
-            .id(url)
-    }
-}
-
-struct NativeVideoView: View {
-    let url: URL
     @StateObject private var model = NativeVideoModel()
 
     var body: some View {
@@ -60,14 +51,20 @@ final class NativeVideoModel: ObservableObject {
         session.progress = 0
         session.currentTimeText = "0:00"
         session.durationText = "0:00"
+        session.isPlaying = false
 
         let item = AVPlayerItem(url: url)
         statusObservation = item.observe(\.status, options: [.initial, .new]) { item, _ in
             Task { @MainActor in
-                if item.status == .failed {
+                switch item.status {
+                case .readyToPlay:
+                    PlaybackSession.shared.failureMessage = nil
+                case .failed:
                     PlaybackSession.shared.failureMessage = item.error?.localizedDescription
                         ?? "This video could not be played."
                     PlaybackSession.shared.isPlaying = false
+                default:
+                    break
                 }
             }
         }
@@ -81,6 +78,7 @@ final class NativeVideoModel: ObservableObject {
 
     func stop() {
         player.pause()
+        player.replaceCurrentItem(with: nil)
         removeObservers()
         currentURL = nil
         PlaybackSession.shared.reset()

@@ -21,6 +21,10 @@ struct ContentView: View {
         !isFullscreen && appState.currentItem != nil
     }
 
+    private var currentIsVideo: Bool {
+        appState.currentItem?.kind == .video
+    }
+
     var body: some View {
         ZStack {
             stage.ignoresSafeArea()
@@ -34,20 +38,13 @@ struct ContentView: View {
 
                 if showsLowerBar {
                     footer
-                    if !appState.items.isEmpty {
-                        FilmstripView(
-                            items: appState.items,
-                            currentIndex: appState.currentIndex,
-                            onSelect: appState.select
-                        )
-                    }
                 }
             }
             .animation(.easeOut(duration: 0.2), value: showsLowerBar)
         }
         .overlay(alignment: .top) {
             if isFullscreen {
-                ZStack(alignment: .top) {
+                VStack(spacing: 0) {
                     if topBarHovered {
                         topBar
                             .frame(maxWidth: .infinity)
@@ -55,17 +52,23 @@ struct ContentView: View {
                             .transition(.opacity)
                     }
 
-                    TopHoverReveal(isHovering: $topBarHovered)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 64)
+                    Color.clear
+                        .frame(height: topBarHovered ? 0 : 64)
                 }
                 .frame(maxWidth: .infinity, alignment: .top)
+                .contentShape(Rectangle())
+                .onHover { hovering in
+                    topBarHovered = hovering
+                }
                 .animation(.easeOut(duration: 0.16), value: topBarHovered)
             }
         }
         .overlay(alignment: .bottom) {
-            if isFullscreen && playback.isVideo {
-                ZStack(alignment: .bottom) {
+            if isFullscreen && currentIsVideo {
+                VStack(spacing: 0) {
+                    Color.clear
+                        .frame(height: bottomBarHovered ? 0 : 72)
+
                     if bottomBarHovered {
                         scrubber
                             .padding(.horizontal, 20)
@@ -80,12 +83,12 @@ struct ContentView: View {
                             )
                             .transition(.opacity)
                     }
-
-                    TopHoverReveal(isHovering: $bottomBarHovered)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 72)
                 }
                 .frame(maxWidth: .infinity, alignment: .bottom)
+                .contentShape(Rectangle())
+                .onHover { hovering in
+                    bottomBarHovered = hovering
+                }
                 .animation(.easeOut(duration: 0.16), value: bottomBarHovered)
             }
         }
@@ -99,6 +102,9 @@ struct ContentView: View {
             zoomState.reset()
             syncWindowTitle()
             armSlideshow()
+            if !currentIsVideo {
+                bottomBarHovered = false
+            }
         }
         .onChange(of: playback.endCount) { _ in
             guard isSlideshow, !slideshowPaused else {
@@ -221,6 +227,7 @@ struct ContentView: View {
                         VideoPreview(url: item.url)
                     }
                 }
+                .id(item.kind)
 
                 if let failure = playback.failureMessage {
                     Text(failure)
@@ -464,62 +471,6 @@ private final class FileDropCollector: @unchecked Sendable {
         lock.lock()
         storage.append(url)
         lock.unlock()
-    }
-}
-
-struct TopHoverReveal: NSViewRepresentable {
-    @Binding var isHovering: Bool
-
-    func makeNSView(context: Context) -> TopHoverView {
-        let view = TopHoverView()
-        view.onHover = { hovering in
-            if isHovering != hovering {
-                isHovering = hovering
-            }
-        }
-        return view
-    }
-
-    func updateNSView(_ nsView: TopHoverView, context: Context) {
-        nsView.onHover = { hovering in
-            if isHovering != hovering {
-                isHovering = hovering
-            }
-        }
-    }
-}
-
-final class TopHoverView: NSView {
-    var onHover: ((Bool) -> Void)?
-    private var trackingArea: NSTrackingArea?
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        nil
-    }
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-
-        if let trackingArea {
-            removeTrackingArea(trackingArea)
-        }
-
-        let trackingArea = NSTrackingArea(
-            rect: bounds,
-            options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
-            owner: self,
-            userInfo: nil
-        )
-        addTrackingArea(trackingArea)
-        self.trackingArea = trackingArea
-    }
-
-    override func mouseEntered(with event: NSEvent) {
-        onHover?(true)
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        onHover?(false)
     }
 }
 
